@@ -88,7 +88,7 @@ déploiement seulement si le build/push a réussi.
 
 1. `git push` sur `main`.
 2. GitHub Actions exécute les 4 jobs en séquence.
-3. Le job `deploy` s'authentifie sur Azure (`azure/login` avec un *service principal*), puis
+3. Le job `deploy` s'authentifie sur Azure en **OIDC** (`azure/login`, identité managée), puis
    recrée le conteneur `myapp` à partir de l'image taguée avec le SHA du commit :
 
    ```bash
@@ -132,20 +132,44 @@ il suffit de renseigner les secrets `AZURE_VM_*` et de l'activer si une VM est d
 |--------|-------------|
 | `DOCKERHUB_USERNAME` | utilisateur Docker Hub |
 | `DOCKERHUB_TOKEN` | *personal access token* Docker Hub (Read & Write) |
-| `AZURE_CREDENTIALS` | JSON du *service principal* (`az ad sp create-for-rbac ... --json-auth`) |
+| `AZURE_CLIENT_ID` | `clientId` de l'identité managée (OIDC) |
+| `AZURE_TENANT_ID` | `tenantId` du compte Azure |
+| `AZURE_SUBSCRIPTION_ID` | `subscriptionId` du compte Azure |
 | `AZURE_RG` | nom du groupe de ressources, ex. `rg-tp` |
 | `AZURE_DNS_LABEL` | préfixe DNS **unique**, ex. `tp-deploiement-bm` → `…​.francecentral.azurecontainer.io` |
 
-### Création du service principal (une fois, dans Azure Cloud Shell)
+Aucun mot de passe / clé secrète Azure n'est stocké : l'authentification GitHub → Azure se fait
+en **OIDC** (jeton court généré à chaque run), via une **identité managée affectée par
+l'utilisateur** dotée d'une *federated credential* sur ce dépôt/branche.
+
+### Mise en place de l'auth OIDC (une fois, dans Azure Cloud Shell)
+
+Le tenant utilisé interdit la création de *service principal*
+(`Insufficient privileges`). On utilise donc une identité managée — ce sont des ressources
+Azure normales (pas d'app registration, aucun droit annuaire requis) :
 
 ```bash
-SUB=$(az account show --query id -o tsv)
-az group create -n rg-tp -l francecentral
-az ad sp create-for-rbac --name sp-tp-deploiement \
-  --role Contributor --scopes /subscriptions/$SUB --json-auth
+RG=rg-tp; REPO=boucheramarouf/tp_deploiement
+SUB=$(az account show --query id -o tsv); TENANT=$(az account show --query tenantId -o tsv)
+
+az group create -n $RG -l francecentral -o none
+az identity create -g $RG -n gh-oidc -o none
+MI_CLIENT=$(az identity show -g $RG -n gh-oidc --query clientId -o tsv)
+MI_PRINCIPAL=$(az identity show -g $RG -n gh-oidc --query principalId -o tsv)
+
+az identity federated-credential create --identity-name gh-oidc -g $RG --name github-main \
+  --issuer https://token.actions.githubusercontent.com \
+  --subject "repo:$REPO:ref:refs/heads/main" \
+  --audiences api://AzureADTokenExchange
+
+az role assignment create --assignee-object-id $MI_PRINCIPAL \
+  --assignee-principal-type ServicePrincipal --role Contributor \
+  --scope /subscriptions/$SUB/resourceGroups/$RG
+
+echo "AZURE_CLIENT_ID=$MI_CLIENT"; echo "AZURE_TENANT_ID=$TENANT"; echo "AZURE_SUBSCRIPTION_ID=$SUB"
 ```
 
-Le JSON renvoyé (`clientId`, `clientSecret`, `subscriptionId`, `tenantId`) = secret `AZURE_CREDENTIALS`.
+Reporter les 3 dernières valeurs dans les secrets GitHub correspondants.
 
 ## Choix techniques
 
@@ -155,7 +179,7 @@ Le JSON renvoyé (`clientId`, `clientSecret`, `subscriptionId`, `tenantId`) = se
 - **Dockerfile multi-stage**, image `node:20-alpine`, utilisateur non-root, `HEALTHCHECK` intégré.
 - **Tag par SHA de commit** : traçabilité + déploiement déterministe (on déploie exactement
   l'image buildée par ce run) ; `latest` en complément.
-- **Déploiement dans GitHub Actions** via `azure/login` + `azure/cli` : rien à la main.
+- **Déploiement dans GitHub Actions** via `azure/login` (OIDC, sans secret) + `az` : rien à la main.
 - **Azure Container Instances + nom & DNS fixes** : idempotent, IP publique, sans VM
   (contrainte de l'abonnement étudiant — voir section dédiée).
 
