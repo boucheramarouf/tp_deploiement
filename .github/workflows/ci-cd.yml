@@ -80,49 +80,64 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ------------------------------------------------------------------
-  # Job 4 : Deploiement sur la VM Azure via SSH (idempotent)
+  # Job 4 : Deploiement sur Azure (idempotent) via Azure Container Instances
+  #
+  # NB : l'abonnement Azure for Students utilise n'autorise AUCUNE VM
+  # (quota vCPU = 0 + capacite indisponible dans les regions autorisees).
+  # On deploie donc le conteneur sur Azure Container Instances (ACI) :
+  # meme resultat (conteneur unique sur IP publique Azure, redeploiement
+  # automatique a chaque push), l'acces SSH est remplace par la CLI Azure.
   # ------------------------------------------------------------------
   deploy:
-    name: Deploy on Azure VM
+    name: Deploy on Azure (ACI)
     runs-on: ubuntu-latest
     needs: build-push
     steps:
-      - name: Deploy over SSH
-        uses: appleboy/ssh-action@v1
+      - name: Login Azure
+        uses: azure/login@v2
         with:
-          host: ${{ secrets.AZURE_VM_HOST }}
-          username: ${{ secrets.AZURE_VM_USER }}
-          key: ${{ secrets.AZURE_SSH_PRIVATE_KEY }}
-          script: |
-            set -e
-            IMAGE="${{ env.IMAGE_NAME }}:${{ needs.build-push.outputs.image_tag }}"
-            echo "Deploiement de $IMAGE"
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-            docker pull "$IMAGE"
-
-            # Idempotent : un seul conteneur nomme "myapp"
-            docker rm -f myapp 2>/dev/null || true
-            docker run -d \
-              --name myapp \
-              --restart unless-stopped \
-              -p 80:3000 \
-              -e PORT=3000 \
-              "$IMAGE"
-
-            docker image prune -f
-
-      - name: Healthcheck via IP publique
+      - name: Deploy container (idempotent)
         run: |
           set -e
-          for i in $(seq 1 10); do
-            code=$(curl -s -o /dev/null -w "%{http_code}" "http://${{ secrets.AZURE_VM_HOST }}/health" || true)
+          RG='${{ secrets.AZURE_RG }}'
+          LOC='francecentral'
+          IMAGE='${{ env.IMAGE_NAME }}:${{ needs.build-push.outputs.image_tag }}'
+
+          az group create -n "$RG" -l "$LOC" -o none
+
+          # Idempotent : un seul "container group" nomme myapp, meme FQDN a chaque run
+          az container delete -g "$RG" -n myapp --yes 2>/dev/null || true
+          az container create \
+            -g "$RG" -n myapp \
+            --image "$IMAGE" \
+            --os-type Linux --cpu 1 --memory 1 \
+            --ports 3000 \
+            --ip-address Public \
+            --dns-name-label '${{ secrets.AZURE_DNS_LABEL }}' \
+            --environment-variables PORT=3000 \
+            --restart-policy Always \
+            --registry-login-server index.docker.io \
+            --registry-username '${{ secrets.DOCKERHUB_USERNAME }}' \
+            --registry-password '${{ secrets.DOCKERHUB_TOKEN }}' \
+            -o none
+
+          az container show -g "$RG" -n myapp \
+            --query "{ip:ipAddress.ip,fqdn:ipAddress.fqdn,state:instanceView.state}" -o json
+
+      - name: Healthcheck sur l'IP publique Azure
+        run: |
+          set -e
+          FQDN='${{ secrets.AZURE_DNS_LABEL }}.francecentral.azurecontainer.io'
+          for i in $(seq 1 20); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "http://$FQDN:3000/health" || true)
             echo "Tentative $i -> HTTP $code"
             if [ "$code" = "200" ]; then
-              echo "Application en ligne."
+              echo "Application en ligne : http://$FQDN:3000/"
               exit 0
             fi
-            sleep 5
+            sleep 8
           done
           echo "L'application ne repond pas."
           exit 1

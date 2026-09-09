@@ -1,8 +1,8 @@
 # TP Déploiement — CI/CD automatisé
 
 Application web de démonstration + pipeline **GitHub Actions** qui, à chaque push sur `main`,
-teste, construit une image Docker, la publie sur **Docker Hub** et la déploie sur une **VM Azure**
-via SSH. Aucune action manuelle après le `git push`.
+teste, construit une image Docker, la publie sur **Docker Hub** et la déploie **sur Azure**
+(conteneur exposé sur une IP publique). Aucune action manuelle après le `git push`.
 
 ```
 git push (main)
@@ -17,9 +17,9 @@ GitHub Actions
       ↓
 4) Push image sur Docker Hub
       ↓
-5) Deploy sur VM Azure (SSH)          ← idempotent, conteneur "myapp"
+5) Deploy sur Azure (conteneur "myapp", IP publique)   ← idempotent
       ↓
-6) Healthcheck HTTP sur l'IP publique
+6) Healthcheck HTTP sur l'IP/FQDN public
 ```
 
 ## L'application
@@ -47,10 +47,10 @@ docker run -d --name myapp -p 3000:3000 tp-deploiement
 curl http://localhost:3000/health
 ```
 
-Ou avec Docker Compose (identique au déploiement VM, port 80) :
+Ou avec Docker Compose :
 
 ```bash
-IMAGE=tp-deploiement docker compose up -d
+IMAGE=tp-deploiement docker compose up -d   # expose http://localhost
 ```
 
 ## Les tests
@@ -62,7 +62,7 @@ IMAGE=tp-deploiement docker compose up -d
 
 - **Unitaires** : logique métier (`normalizeText`) + comportement des routes (`/health`,
   `/api/messages` GET/POST, cas d'erreur 400).
-- **E2E** : `npm run e2e` démarre le serveur, attend `/health`, puis Cypress vérifie :
+- **E2E** : le serveur est démarré, on attend `/health`, puis Cypress vérifie :
   1. disponibilité de l'application (`GET /health` = 200),
   2. chargement de la page d'accueil,
   3. ajout d'un message via l'interface (fonctionnalité en plus de `/health`),
@@ -77,9 +77,9 @@ Fichier : [.github/workflows/ci-cd.yml](.github/workflows/ci-cd.yml) — déclen
 | Job | Rôle | Dépend de |
 |-----|------|-----------|
 | `unit-tests` | `npm ci` + `npm test` | — |
-| `e2e-tests` | `npm ci` + `npm run e2e` | `unit-tests` |
+| `e2e-tests` | démarre le serveur + `cypress run` | `unit-tests` |
 | `build-push` | build image + tags `latest` et `<sha7>` + push Docker Hub | `unit-tests`, `e2e-tests` |
-| `deploy` | SSH sur la VM Azure, `docker pull`, redémarre `myapp`, healthcheck | `build-push` |
+| `deploy` | login Azure + déploie le conteneur + healthcheck sur l'IP publique | `build-push` |
 
 Grâce à `needs:`, **le build ne se lance que si les tests unitaires ET E2E passent**, et le
 déploiement seulement si le build/push a réussi.
@@ -88,61 +88,76 @@ déploiement seulement si le build/push a réussi.
 
 1. `git push` sur `main`.
 2. GitHub Actions exécute les 4 jobs en séquence.
-3. Le job `deploy` se connecte en SSH à la VM Azure (`appleboy/ssh-action`), fait
-   `docker login` + `docker pull` de l'image taguée avec le SHA du commit, puis :
+3. Le job `deploy` s'authentifie sur Azure (`azure/login` avec un *service principal*), puis
+   recrée le conteneur `myapp` à partir de l'image taguée avec le SHA du commit :
 
    ```bash
-   docker rm -f myapp 2>/dev/null || true
-   docker run -d --name myapp --restart unless-stopped -p 80:3000 -e PORT=3000 <image>
+   az container delete -g <RG> -n myapp --yes || true
+   az container create -g <RG> -n myapp --image <user>/tp-deploiement:<sha7> \
+     --ports 3000 --ip-address Public --dns-name-label <label> \
+     --environment-variables PORT=3000 --restart-policy Always
    ```
 
-4. Un dernier step interroge `http://<IP_PUBLIQUE_VM>/health` (10 tentatives) ; la pipeline
-   échoue si l'app ne renvoie pas `200`.
+4. Un dernier step interroge `http://<label>.francecentral.azurecontainer.io:3000/health`
+   (20 tentatives) ; la pipeline échoue si l'app ne renvoie pas `200`.
 
 ### Idempotence
 
-- Nom de conteneur **fixe** (`myapp`) + `docker rm -f` avant `docker run` → jamais deux
-  conteneurs, pas de conflit de port.
-- `--restart unless-stopped` → l'app repart au reboot de la VM.
-- Rejouer le workflow ou repousser le même commit **redéploie proprement** le même état.
-- `docker image prune -f` nettoie les anciennes images.
+- **Nom fixe** `myapp` + `az container delete` avant `az container create` → jamais deux
+  conteneurs, pas de doublon.
+- **DNS label fixe** → le FQDN/URL public reste identique à chaque déploiement.
+- `--restart-policy Always` → le conteneur redémarre en cas de crash.
+- Rejouer le workflow ou repousser le même commit **redéploie proprement le même état**.
+
+### Pourquoi Azure Container Instances et pas une VM Azure + SSH ?
+
+L'abonnement **Azure for Students** utilisé pour ce TP n'autorise la création d'**aucune VM** :
+
+- toutes les régions sauf `francecentral` sont bloquées par une *policy* (`RequestDisallowedByAzure`) ;
+- en `francecentral`, toutes les familles de VM renvoient `SkuNotAvailable` (capacité) ou
+  `QuotaExceeded` (quota vCPU = 0), y compris `B1s`, `B2s`, `D2s_v3`, etc.
+
+Le déploiement se fait donc sur **Azure Container Instances** : c'est toujours du 100 % Azure,
+sur une **IP publique Azure**, **entièrement piloté par GitHub Actions** et **idempotent**.
+La seule différence avec l'énoncé est l'accès (CLI Azure au lieu de SSH).
+Le workflow « VM + SSH » d'origine reste fourni dans
+[`deploy/ci-cd-vm-ssh.yml`](deploy/ci-cd-vm-ssh.yml) et [`docker-compose.yml`](docker-compose.yml) :
+il suffit de renseigner les secrets `AZURE_VM_*` et de l'activer si une VM est disponible.
 
 ## Secrets GitHub (aucun identifiant en clair dans le dépôt)
 
-À créer dans **Settings → Secrets and variables → Actions** :
+**Settings → Secrets and variables → Actions** :
 
 | Secret | Description |
 |--------|-------------|
 | `DOCKERHUB_USERNAME` | utilisateur Docker Hub |
-| `DOCKERHUB_TOKEN` | access token Docker Hub (Account settings → Security) |
-| `AZURE_VM_HOST` | IP publique (ou DNS) de la VM Azure |
-| `AZURE_VM_USER` | utilisateur SSH de la VM (ex : `azureuser`) |
-| `AZURE_SSH_PRIVATE_KEY` | clé privée SSH correspondant à la clé publique de la VM |
+| `DOCKERHUB_TOKEN` | *personal access token* Docker Hub (Read & Write) |
+| `AZURE_CREDENTIALS` | JSON du *service principal* (`az ad sp create-for-rbac ... --json-auth`) |
+| `AZURE_RG` | nom du groupe de ressources, ex. `rg-tp` |
+| `AZURE_DNS_LABEL` | préfixe DNS **unique**, ex. `tp-deploiement-bm` → `…​.francecentral.azurecontainer.io` |
 
-## Préparation de la VM Azure (une seule fois)
+### Création du service principal (une fois, dans Azure Cloud Shell)
 
 ```bash
-# sur la VM
-sudo apt-get update && sudo apt-get install -y docker.io
-sudo usermod -aG docker $USER   # puis se reconnecter
+SUB=$(az account show --query id -o tsv)
+az group create -n rg-tp -l francecentral
+az ad sp create-for-rbac --name sp-tp-deploiement \
+  --role Contributor --scopes /subscriptions/$SUB --json-auth
 ```
 
-Ouvrir le port **80** dans le *Network Security Group* Azure (règle entrante HTTP).
-La clé publique doit être dans `~/.ssh/authorized_keys` de l'utilisateur SSH.
+Le JSON renvoyé (`clientId`, `clientSecret`, `subscriptionId`, `tenantId`) = secret `AZURE_CREDENTIALS`.
 
 ## Choix techniques
 
 - **Express** : minimal, démarrage rapide, healthcheck trivial.
-- **Jest + Supertest** : tests des routes sans lancer de vrai serveur (rapide en CI).
+- **Jest + Supertest** : test des routes sans vrai serveur réseau (rapide en CI).
 - **Cypress** : parcours E2E réel (navigateur) incluant l'UI, comme demandé.
-- **Dockerfile multi-stage** + image `node:20-alpine`, utilisateur non-root, `HEALTHCHECK` intégré.
+- **Dockerfile multi-stage**, image `node:20-alpine`, utilisateur non-root, `HEALTHCHECK` intégré.
 - **Tag par SHA de commit** : traçabilité + déploiement déterministe (on déploie exactement
-  l'image buildée par ce run), `latest` en complément.
-- **`appleboy/ssh-action`** : déploiement 100 % dans GitHub Actions, rien à la main.
-- **Déploiement par `docker run` + nom fixe** : idempotent et sans dépendance supplémentaire
-  sur la VM (une alternative `docker compose` est fournie dans `docker-compose.yml`).
+  l'image buildée par ce run) ; `latest` en complément.
+- **Déploiement dans GitHub Actions** via `azure/login` + `azure/cli` : rien à la main.
+- **Azure Container Instances + nom & DNS fixes** : idempotent, IP publique, sans VM
+  (contrainte de l'abonnement étudiant — voir section dédiée).
 
 ## Capture d'écran
 
-La capture de la VM Azure accessible sur son IP publique est dans
-[`screenshots/`](screenshots/).

@@ -1,0 +1,48 @@
+# Variante « VM Azure + SSH » de l'énoncé d'origine.
+# NON utilisée : l'abonnement Azure for Students n'autorise aucune VM
+# (voir README, section « Pourquoi Azure Container Instances »).
+#
+# Pour l'activer : copier ce fichier dans .github/workflows/, renseigner les
+# secrets AZURE_VM_HOST / AZURE_VM_USER / AZURE_SSH_PRIVATE_KEY, et retirer
+# le job `deploy` (ACI) de ci-cd.yml.
+
+name: CI/CD (VM + SSH)
+
+on:
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/tp-deploiement
+
+jobs:
+  deploy:
+    name: Deploy on Azure VM (SSH)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.AZURE_VM_HOST }}
+          username: ${{ secrets.AZURE_VM_USER }}
+          key: ${{ secrets.AZURE_SSH_PRIVATE_KEY }}
+          script: |
+            set -e
+            IMAGE="${{ env.IMAGE_NAME }}:latest"
+            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+            docker pull "$IMAGE"
+
+            # Idempotent : un seul conteneur nomme "myapp"
+            docker rm -f myapp 2>/dev/null || true
+            docker run -d --name myapp --restart unless-stopped -p 80:3000 -e PORT=3000 "$IMAGE"
+            docker image prune -f
+
+      - name: Healthcheck via IP publique
+        run: |
+          set -e
+          for i in $(seq 1 10); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "http://${{ secrets.AZURE_VM_HOST }}/health" || true)
+            echo "Tentative $i -> HTTP $code"
+            [ "$code" = "200" ] && exit 0
+            sleep 5
+          done
+          exit 1
