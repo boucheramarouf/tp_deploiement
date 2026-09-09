@@ -159,5 +159,3 @@ Le JSON renvoyé (`clientId`, `clientSecret`, `subscriptionId`, `tenantId`) = se
 - **Azure Container Instances + nom & DNS fixes** : idempotent, IP publique, sans VM
   (contrainte de l'abonnement étudiant — voir section dédiée).
 
-## Capture d'écran
-
