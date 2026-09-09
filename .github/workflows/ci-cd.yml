@@ -107,10 +107,9 @@ jobs:
         run: |
           set -e
           RG='${{ secrets.AZURE_RG }}'
-          LOC='francecentral'
           IMAGE='${{ env.IMAGE_NAME }}:${{ needs.build-push.outputs.image_tag }}'
-
-          az group create -n "$RG" -l "$LOC" -o none
+          # le resource group rg-tp existe deja (cree lors de la mise en place OIDC) ;
+          # l'identite managee a le role Contributor uniquement sur ce groupe.
 
           # Idempotent : un seul "container group" nomme myapp, meme FQDN a chaque run
           az container delete -g "$RG" -n myapp --yes 2>/dev/null || true
