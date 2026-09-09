@@ -183,3 +183,8 @@ Reporter les 3 dernières valeurs dans les secrets GitHub correspondants.
 - **Azure Container Instances + nom & DNS fixes** : idempotent, IP publique, sans VM
   (contrainte de l'abonnement étudiant — voir section dédiée).
 
+## Capture d'écran
+
+La capture de l'application accessible sur l'IP / le FQDN public Azure est dans
+[`screenshots/`](screenshots/) (`http://<AZURE_DNS_LABEL>.francecentral.azurecontainer.io:3000/`).
+
