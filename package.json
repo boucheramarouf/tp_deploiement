@@ -1,0 +1,31 @@
+{
+  "name": "tp-deploiement",
+  "version": "1.0.0",
+  "description": "Application web + pipeline CI/CD (GitHub Actions -> Docker Hub -> VM Azure)",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node src/server.js",
+    "test": "jest --runInBand",
+    "e2e": "start-server-and-test start http://localhost:3000/health cypress:run",
+    "cypress:run": "cypress run",
+    "cypress:open": "cypress open"
+  },
+  "keywords": [
+    "ci-cd",
+    "docker",
+    "github-actions",
+    "azure"
+  ],
+  "author": "boucheramarouf",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "cypress": "^13.13.0",
+    "jest": "^29.7.0",
+    "start-server-and-test": "^2.0.4",
+    "supertest": "^7.0.0"
+  }
+}

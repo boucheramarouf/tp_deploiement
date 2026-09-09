@@ -1,0 +1,12 @@
+node_modules
+npm-debug.log
+.git
+.github
+cypress
+cypress.config.js
+test
+coverage
+.gitignore
+README.md
+*.md
+screenshots

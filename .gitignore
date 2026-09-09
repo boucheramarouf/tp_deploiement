@@ -1,0 +1,7 @@
+node_modules/
+coverage/
+npm-debug.log*
+.env
+cypress/videos/
+cypress/screenshots/
+.DS_Store

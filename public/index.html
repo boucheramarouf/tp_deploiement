@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TP Deploiement - App</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; }
+      h1 { margin-bottom: 4px; }
+      .muted { color: #666; }
+      ul { padding-left: 20px; }
+      form { display: flex; gap: 8px; margin-top: 16px; }
+      input { flex: 1; padding: 8px; }
+      button { padding: 8px 16px; }
+      #status { margin-top: 12px; }
+    </style>
+  </head>
+  <body>
+    <h1>TP Deploiement</h1>
+    <p class="muted">Application demo pour la pipeline CI/CD.</p>
+
+    <h2>Messages</h2>
+    <ul id="messages"></ul>
+
+    <form id="add-form">
+      <input id="new-text" name="text" placeholder="Nouveau message" required />
+      <button type="submit">Ajouter</button>
+    </form>
+    <p id="status"></p>
+
+    <script>
+      async function loadMessages() {
+        const res = await fetch('/api/messages');
+        const data = await res.json();
+        const list = document.getElementById('messages');
+        list.innerHTML = '';
+        data.forEach((m) => {
+          const li = document.createElement('li');
+          li.textContent = m.text;
+          li.dataset.id = m.id;
+          list.appendChild(li);
+        });
+      }
+
+      document.getElementById('add-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const text = document.getElementById('new-text').value;
+        const res = await fetch('/api/messages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+        });
+        document.getElementById('status').textContent =
+          res.ok ? 'Message ajoute' : 'Erreur';
+        document.getElementById('new-text').value = '';
+        await loadMessages();
+      });
+
+      loadMessages();
+    </script>
+  </body>
+</html>
